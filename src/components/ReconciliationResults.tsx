@@ -2,6 +2,7 @@
 
 import { useState, useRef } from "react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 const LOCALE = "en-NG";
 
@@ -16,6 +17,37 @@ interface Summary {
   bank_to_backend_unmatched: number;
   total_unmatched_backend_value: number;
   total_unmatched_bank_value: number;
+  reversal_matched?: number;
+  reversal_unmatched?: number;
+  failed_backend_mapped?: number;
+}
+
+interface UnmatchedData {
+  backend_only_send?: Array<{
+    transaction_type: string;
+    amount: number;
+    date_created?: string;
+    status?: string;
+  }>;
+  backend_only_fund?: Array<{
+    transaction_type: string;
+    amount: number;
+    session_id?: string;
+    date_created?: string;
+    status?: string;
+  }>;
+  bank_only?: Array<{
+    transaction_date: string;
+    narration: string;
+    debit?: number;
+    credit?: number;
+  }>;
+  reversal_unmatched?: Array<{
+    transaction_date: string;
+    narration: string;
+    credit?: number;
+    debit?: number;
+  }>;
 }
 
 interface ReconciliationData {
@@ -28,6 +60,7 @@ interface ReconciliationData {
   backend_count: number;
   bank_count: number;
   bank_transactions_parsed?: number;
+  unmatched?: UnmatchedData;
 }
 
 interface Props {
@@ -45,6 +78,90 @@ function formatCurrency(n: number): string {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(n);
+}
+
+function formatPercent(value: number): string {
+  return `${value.toFixed(1)}%`;
+}
+
+function safeNumber(value?: number): number {
+  return typeof value === "number" && !Number.isNaN(value) ? value : 0;
+}
+
+function downloadCsv(filename: string, rows: Array<Record<string, unknown>>) {
+  const headers = Array.from(
+    rows.reduce((acc, row) => {
+      Object.keys(row).forEach((key) => acc.add(key));
+      return acc;
+    }, new Set<string>())
+  );
+
+  const escapeCell = (value: unknown) => {
+    if (value === null || value === undefined) return "";
+    const raw = String(value);
+    if (raw.includes("\"")) {
+      return `"${raw.replace(/\"/g, '""')}"`;
+    }
+    if (raw.includes(",") || raw.includes("\n")) {
+      return `"${raw}"`;
+    }
+    return raw;
+  };
+
+  const csv = [headers.join(",")]
+    .concat(
+      rows.map((row) =>
+        headers.map((header) => escapeCell(row[header])).join(",")
+      )
+    )
+    .join("\n");
+
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function InsightCard({ title, value, detail }: { title: string; value: string; detail: string }) {
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-4">
+      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
+        {title}
+      </p>
+      <p className="text-xl font-bold text-slate-800 mt-2">{value}</p>
+      <p className="text-xs text-slate-500 mt-1">{detail}</p>
+    </div>
+  );
+}
+
+function SimpleBar({
+  label,
+  value,
+  total,
+  color,
+}: {
+  label: string;
+  value: number;
+  total: number;
+  color: string;
+}) {
+  const pct = total > 0 ? (value / total) * 100 : 0;
+  return (
+    <div className="space-y-1.5">
+      <div className="flex justify-between text-xs text-slate-500">
+        <span>{label}</span>
+        <span>
+          {formatNumber(value)} ({formatPercent(pct)})
+        </span>
+      </div>
+      <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
+        <div className={`h-full ${color}`} style={{ width: `${pct}%` }} />
+      </div>
+    </div>
+  );
 }
 
 function MatchBar({
@@ -116,6 +233,39 @@ export default function ReconciliationResults({ data }: Props) {
     "idle"
   );
   const { summary } = data;
+  const unmatched = data.unmatched;
+
+  const totalBankMatched = safeNumber(summary.bank_to_backend_matched);
+  const totalBankUnmatched = safeNumber(summary.bank_to_backend_unmatched);
+  const totalBank = totalBankMatched + totalBankUnmatched;
+  const overallMatchRate =
+    totalBank > 0 ? (totalBankMatched / totalBank) * 100 : 0;
+
+  const sendTotal =
+    safeNumber(summary.send_bank_matched) +
+    safeNumber(summary.send_bank_unmatched);
+  const fundTotal =
+    safeNumber(summary.fund_matched) + safeNumber(summary.fund_unmatched);
+  const reversalTotal =
+    safeNumber(summary.reversal_matched) +
+    safeNumber(summary.reversal_unmatched);
+
+  const unmatchedSendCount = unmatched?.backend_only_send?.length ?? 0;
+  const unmatchedFundCount = unmatched?.backend_only_fund?.length ?? 0;
+  const unmatchedBankCount = unmatched?.bank_only?.length ?? 0;
+  const unmatchedReversalCount = unmatched?.reversal_unmatched?.length ?? 0;
+  const unmatchedTotal =
+    unmatchedSendCount +
+    unmatchedFundCount +
+    unmatchedBankCount +
+    unmatchedReversalCount;
+
+  const topUnmatchedBucket = [
+    { label: "Backend send", value: unmatchedSendCount },
+    { label: "Backend fund", value: unmatchedFundCount },
+    { label: "Bank only", value: unmatchedBankCount },
+    { label: "Reversal", value: unmatchedReversalCount },
+  ].sort((a, b) => b.value - a.value)[0];
 
   const statusColor =
     data.status === "complete"
@@ -309,6 +459,92 @@ export default function ReconciliationResults({ data }: Props) {
                 matched={summary.bank_to_backend_matched}
                 unmatched={summary.bank_to_backend_unmatched}
               />
+              {(summary.reversal_matched || summary.reversal_unmatched) && (
+                <MatchBar
+                  label="Reversals"
+                  matched={safeNumber(summary.reversal_matched)}
+                  unmatched={safeNumber(summary.reversal_unmatched)}
+                />
+              )}
+            </div>
+          </section>
+
+          {/* Charts & Insights */}
+          <section>
+            <h2 className="text-sm font-semibold text-slate-500 uppercase tracking-wider mb-4">
+              Charts & Insights
+            </h2>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <div className="bg-white border border-slate-200 rounded-xl p-5">
+                <div className="flex items-center justify-between mb-4">
+                  <p className="text-sm font-semibold text-slate-700">
+                    Match Rate Overview
+                  </p>
+                  <span className="text-xs text-slate-500">
+                    {formatPercent(overallMatchRate)} matched
+                  </span>
+                </div>
+                <div className="space-y-4">
+                  <SimpleBar
+                    label="Matched"
+                    value={totalBankMatched}
+                    total={totalBank}
+                    color="bg-emerald-500"
+                  />
+                  <SimpleBar
+                    label="Unmatched"
+                    value={totalBankUnmatched}
+                    total={totalBank}
+                    color="bg-red-400"
+                  />
+                </div>
+              </div>
+              <div className="bg-white border border-slate-200 rounded-xl p-5">
+                <p className="text-sm font-semibold text-slate-700 mb-4">
+                  Volume Mix by Transaction Type
+                </p>
+                <div className="space-y-4">
+                  <SimpleBar
+                    label="Send Bank Transfers"
+                    value={sendTotal}
+                    total={sendTotal + fundTotal + reversalTotal}
+                    color="bg-blue-500"
+                  />
+                  <SimpleBar
+                    label="Fund Transfers"
+                    value={fundTotal}
+                    total={sendTotal + fundTotal + reversalTotal}
+                    color="bg-indigo-500"
+                  />
+                  <SimpleBar
+                    label="Reversals"
+                    value={reversalTotal}
+                    total={sendTotal + fundTotal + reversalTotal}
+                    color="bg-amber-500"
+                  />
+                </div>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6">
+              <InsightCard
+                title="Overall Match Rate"
+                value={formatPercent(overallMatchRate)}
+                detail={`${formatNumber(totalBankMatched)} matched of ${formatNumber(totalBank)} total bank-side transactions`}
+              />
+              <InsightCard
+                title="Largest Unmatched Bucket"
+                value={topUnmatchedBucket?.label ?? "N/A"}
+                detail={
+                  unmatchedTotal > 0
+                    ? `${formatNumber(topUnmatchedBucket?.value ?? 0)} of ${formatNumber(unmatchedTotal)} unmatched transactions`
+                    : "No unmatched data provided"
+                }
+              />
+              <InsightCard
+                title="Failed Backend Mapped"
+                value={formatNumber(safeNumber(summary.failed_backend_mapped))}
+                detail="Backend records flagged as failed but mapped during reconciliation"
+              />
             </div>
           </section>
 
@@ -481,6 +717,120 @@ export default function ReconciliationResults({ data }: Props) {
             </div>
           </section>
 
+          {/* Unmatched Exports */}
+          <section>
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-4">
+              <h2 className="text-sm font-semibold text-slate-500 uppercase tracking-wider">
+                Unmatched Exports
+              </h2>
+              <p className="text-xs text-slate-400">
+                Export detailed rows to CSV for deeper analysis
+              </p>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="bg-white border border-slate-200 rounded-xl p-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-700">
+                      Backend Only - Send Transfers
+                    </p>
+                    <p className="text-xs text-slate-500">
+                      {formatNumber(unmatchedSendCount)} records
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      downloadCsv(
+                        `unmatched-backend-send-${data.run_id}.csv`,
+                        unmatched?.backend_only_send ?? []
+                      )
+                    }
+                    className="px-3 py-1.5 text-xs font-semibold text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 transition"
+                    disabled={unmatchedSendCount === 0}
+                  >
+                    Export CSV
+                  </button>
+                </div>
+              </div>
+              <div className="bg-white border border-slate-200 rounded-xl p-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-700">
+                      Backend Only - Fund Transfers
+                    </p>
+                    <p className="text-xs text-slate-500">
+                      {formatNumber(unmatchedFundCount)} records
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      downloadCsv(
+                        `unmatched-backend-fund-${data.run_id}.csv`,
+                        unmatched?.backend_only_fund ?? []
+                      )
+                    }
+                    className="px-3 py-1.5 text-xs font-semibold text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 transition"
+                    disabled={unmatchedFundCount === 0}
+                  >
+                    Export CSV
+                  </button>
+                </div>
+              </div>
+              <div className="bg-white border border-slate-200 rounded-xl p-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-700">
+                      Bank Only
+                    </p>
+                    <p className="text-xs text-slate-500">
+                      {formatNumber(unmatchedBankCount)} records
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      downloadCsv(
+                        `unmatched-bank-only-${data.run_id}.csv`,
+                        unmatched?.bank_only ?? []
+                      )
+                    }
+                    className="px-3 py-1.5 text-xs font-semibold text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 transition"
+                    disabled={unmatchedBankCount === 0}
+                  >
+                    Export CSV
+                  </button>
+                </div>
+              </div>
+              <div className="bg-white border border-slate-200 rounded-xl p-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-700">
+                      Reversal Unmatched
+                    </p>
+                    <p className="text-xs text-slate-500">
+                      {formatNumber(unmatchedReversalCount)} records
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      downloadCsv(
+                        `unmatched-reversal-${data.run_id}.csv`,
+                        unmatched?.reversal_unmatched ?? []
+                      )
+                    }
+                    className="px-3 py-1.5 text-xs font-semibold text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 transition"
+                    disabled={unmatchedReversalCount === 0}
+                  >
+                    Export CSV
+                  </button>
+                </div>
+              </div>
+            </div>
+          </section>
+
           {/* AI Analysis */}
           {data.ai_analysis && (
             <section>
@@ -510,6 +860,7 @@ export default function ReconciliationResults({ data }: Props) {
                 </div>
                 <div className="prose prose-sm prose-slate max-w-none">
                   <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
                     components={{
                       h1: ({ children }) => (
                         <h1 className="text-xl font-bold text-slate-800 mt-4 mb-2">

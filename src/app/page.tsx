@@ -27,11 +27,41 @@ interface ReconciliationResponse {
     bank_to_backend_unmatched: number;
     total_unmatched_backend_value: number;
     total_unmatched_bank_value: number;
+    reversal_matched?: number;
+    reversal_unmatched?: number;
+    failed_backend_mapped?: number;
   };
   ai_analysis?: string;
   backend_count: number;
   bank_count: number;
   bank_transactions_parsed?: number;
+  unmatched?: {
+    backend_only_send?: Array<{
+      transaction_type: string;
+      amount: number;
+      date_created?: string;
+      status?: string;
+    }>;
+    backend_only_fund?: Array<{
+      transaction_type: string;
+      amount: number;
+      session_id?: string;
+      date_created?: string;
+      status?: string;
+    }>;
+    bank_only?: Array<{
+      transaction_date: string;
+      narration: string;
+      debit?: number;
+      credit?: number;
+    }>;
+    reversal_unmatched?: Array<{
+      transaction_date: string;
+      narration: string;
+      credit?: number;
+      debit?: number;
+    }>;
+  };
   error?: string;
 }
 
