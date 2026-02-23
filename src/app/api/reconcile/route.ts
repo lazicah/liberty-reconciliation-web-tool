@@ -198,12 +198,48 @@ export async function POST(request: NextRequest) {
 
     console.log(`Parsed ${bankData.length} transactions from the sheet.`);
 
+    // Filter transactions by date range
+    const startDateTime = new Date(start_date);
+    const endDateTime = new Date(end_date);
+    endDateTime.setHours(23, 59, 59, 999); // Include entire end date
+
+    const filteredTransactions = bankData.filter((txn) => {
+      // Parse transaction date - try multiple formats
+      let txnDate: Date | null = null;
+      
+      // Try ISO format first
+      if (txn.transaction_date.match(/^\d{4}-\d{2}-\d{2}/)) {
+        txnDate = new Date(txn.transaction_date);
+      }
+      // Try DD/MM/YYYY format
+      else if (txn.transaction_date.match(/^\d{2}\/\d{2}\/\d{4}/)) {
+        const [day, month, year] = txn.transaction_date.split("/");
+        txnDate = new Date(`${year}-${month}-${day}`);
+      }
+      // Try MM/DD/YYYY format
+      else if (txn.transaction_date.match(/^\d{2}\/\d{2}\/\d{4}/)) {
+        const [month, day, year] = txn.transaction_date.split("/");
+        txnDate = new Date(`${year}-${month}-${day}`);
+      }
+
+      if (!txnDate || isNaN(txnDate.getTime())) {
+        console.warn(`Could not parse transaction date: ${txn.transaction_date}`);
+        return false;
+      }
+
+      return txnDate >= startDateTime && txnDate <= endDateTime;
+    });
+
+    console.log(
+      `Filtered to ${filteredTransactions.length} transactions within date range ${start_date} to ${end_date}.`
+    );
+
     // Build reconciliation request
     const reconcileBody = {
       start_date,
       end_date,
       run_ai_analysis: run_ai_analysis ?? false,
-      bank_data: bankData,
+      bank_data: filteredTransactions,
     };
 
     console.log(reconcileBody);
