@@ -2,6 +2,14 @@
 
 import { useState, useRef } from "react";
 import ReconciliationResults from "@/components/ReconciliationResults";
+import ProgressLog from "@/components/ProgressLog";
+
+interface LogEntry {
+  id: string;
+  message: string;
+  timestamp: Date;
+  status: "pending" | "success" | "error";
+}
 
 interface ReconciliationResponse {
   run_id: string;
@@ -35,15 +43,51 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [results, setResults] = useState<ReconciliationResponse | null>(null);
+  const [progressLogs, setProgressLogs] = useState<LogEntry[]>([]);
   const resultsRef = useRef<HTMLDivElement>(null);
+  const logCounterRef = useRef(0);
+
+  function addLog(
+    message: string,
+    status: "pending" | "success" | "error" = "pending"
+  ): string {
+    const id = `log-${++logCounterRef.current}`;
+    const entry: LogEntry = {
+      id,
+      message,
+      timestamp: new Date(),
+      status,
+    };
+    setProgressLogs((prev) => [...prev, entry]);
+    return id;
+  }
+
+  function updateLog(id: string, status: "success" | "error") {
+    setProgressLogs((prev) =>
+      prev.map((log) => (log.id === id ? { ...log, status } : log))
+    );
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError("");
     setResults(null);
+    setProgressLogs([]);
     setLoading(true);
 
     try {
+      const validateLog = addLog("Validating input...");
+      // Quick validation
+      if (!sheetUrl || !startDate || !endDate) {
+        updateLog(validateLog, "error");
+        setError("Please fill in all required fields.");
+        setLoading(false);
+        return;
+      }
+      updateLog(validateLog, "success");
+
+      const fetchLog = addLog("Fetching and parsing Google Sheet...");
+
       const response = await fetch("/api/reconcile", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -58,16 +102,35 @@ export default function Home() {
       const data: ReconciliationResponse = await response.json();
 
       if (!response.ok || data.error) {
+        updateLog(fetchLog, "error");
         setError(data.error ?? "An unexpected error occurred.");
-      } else {
-        setResults(data);
-        setTimeout(() => {
-          resultsRef.current?.scrollIntoView({ behavior: "smooth" });
-        }, 100);
+        setLoading(false);
+        return;
       }
+
+      updateLog(fetchLog, "success");
+
+      const reconcileLog = addLog("Running reconciliation...");
+      updateLog(reconcileLog, "success");
+
+      if (runAiAnalysis && data.ai_analysis) {
+        const analysisLog = addLog("AI analysis completed");
+        updateLog(analysisLog, "success");
+      }
+
+      const finalLog = addLog("Generating report...");
+      setResults(data);
+      updateLog(finalLog, "success");
+
+      setTimeout(() => {
+        resultsRef.current?.scrollIntoView({ behavior: "smooth" });
+      }, 100);
     } catch (err) {
       console.error("Reconciliation request failed:", err);
       setError("Network error. Please check your connection and try again.");
+      if (progressLogs.length > 0) {
+        updateLog(progressLogs[progressLogs.length - 1].id, "error");
+      }
     } finally {
       setLoading(false);
     }
@@ -212,6 +275,9 @@ export default function Home() {
                 </div>
               </div>
             )}
+
+            {/* Progress Log */}
+            {loading && <ProgressLog logs={progressLogs} />}
 
             {/* Submit */}
             <button

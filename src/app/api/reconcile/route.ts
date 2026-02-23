@@ -84,10 +84,10 @@ function mapRowToTransaction(
     "id"
   );
   const transactionDate = findValue(
+    "created_date",
     "transaction_date",
-    "transaction date",
     "date",
-    "txn_date",
+    "created_date",
     "value_date"
   );
   const narration = findValue(
@@ -196,6 +196,8 @@ export async function POST(request: NextRequest) {
     // Fetch and parse the Google Sheet
     const bankData = await fetchAndParseSheet(sheet_url);
 
+    console.log(`Parsed ${bankData.length} transactions from the sheet.`);
+
     // Build reconciliation request
     const reconcileBody = {
       start_date,
@@ -204,15 +206,33 @@ export async function POST(request: NextRequest) {
       bank_data: bankData,
     };
 
+    console.log(reconcileBody);
+
     // Call the reconciliation endpoint
-    const reconcileResponse = await fetch(RECONCILE_ENDPOINT, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(reconcileBody),
-    });
+    let reconcileResponse;
+    try {
+      reconcileResponse = await fetch(RECONCILE_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(reconcileBody),
+      });
+    } catch (fetchErr: unknown) {
+      const fetchMessage =
+        fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
+      console.error(`Fetch failed: ${fetchMessage}`);
+      return NextResponse.json(
+        {
+          error: `Failed to connect to reconciliation service: ${fetchMessage}. Please check your internet connection and try again.`,
+        },
+        { status: 503 }
+      );
+    }
 
     if (!reconcileResponse.ok) {
       const errText = await reconcileResponse.text();
+      console.error(
+        `Reconciliation service error (${reconcileResponse.status}): ${errText}`
+      );
       return NextResponse.json(
         {
           error: `Reconciliation service returned an error (${reconcileResponse.status}): ${errText}`,
@@ -230,6 +250,7 @@ export async function POST(request: NextRequest) {
   } catch (err: unknown) {
     const message =
       err instanceof Error ? err.message : "An unexpected error occurred.";
+    console.error(`API error: ${message}`);
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
